@@ -16,6 +16,11 @@ dependencies = [
     "superqt",
 ]
 
+[project.urls]
+Homepage = "https://github.com/delnatan/qtkit"
+Repository = "https://github.com/delnatan/qtkit.git"
+Issues = "https://github.com/delnatan/qtkit/issues"
+
 [project.optional-dependencies]
 plot = ["matplotlib"]
 
