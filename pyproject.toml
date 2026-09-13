@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qtkit"
+version = "0.1.0"
+description = "Reusable Qt widgets and interaction patterns for scientific image-analysis apps"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Daniel Elnatan", email = "delnatan@gmail.com" }]
+dependencies = [
+    "numpy",
+    "qtpy",
+    "superqt",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib"]
+
+[dependency-groups]
+dev = [
+    "pyqt6",
+    "matplotlib",
+    "polars",
+    "pytest",
+    "pytest-qt",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+qt_api = "pyqt6"
+testpaths = ["tests"]
