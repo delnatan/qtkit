@@ -12,6 +12,7 @@ spinbox row).
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import numpy as np
@@ -24,11 +25,39 @@ from qtkit.spinbox import configure_spinbox_for_range, format_adaptive
 
 # Pixel distance from a handle within which a press grabs it.
 HANDLE_GRAB_PX = 8
-DEFAULT_BINS = 100
+# Bin count is Freedman-Diaconis by default, clamped to this range.
+MIN_BINS = 10
+MAX_BINS = 200
+# Threshold (in data units) below which integer-valued data gets one bin per
+# value, when the caller hasn't forced a bin count -- the old DEFAULT_BINS.
+INTEGER_BIN_BUDGET = 100
+# View bounds for log mode when there's no positive data to show at all.
+LOG_FALLBACK_MIN, LOG_FALLBACK_MAX = 1.0, 10.0
+
+
+def _fd_bin_count(x: np.ndarray, min_bins: int = MIN_BINS, max_bins: int = MAX_BINS) -> int:
+    """Freedman-Diaconis bin count for `x`, clamped to `min_bins..max_bins`.
+    Falls back to Sturges' rule when the IQR is zero (heavily duplicated or
+    near-constant data), where FD's bin width would be zero too."""
+    n = x.size
+    if n < 2:
+        return min_bins
+    q75, q25 = np.percentile(x, [75, 25])
+    iqr = q75 - q25
+    if iqr <= 0:
+        return int(np.clip(np.ceil(np.log2(n) + 1), min_bins, max_bins))
+    width = 2 * iqr * n ** (-1 / 3)
+    data_range = x.max() - x.min()
+    if width <= 0 or data_range <= 0:
+        return min_bins
+    return int(np.clip(np.ceil(data_range / width), min_bins, max_bins))
 
 
 class HistogramCanvas(QWidget):
-    """Log-scaled histogram with draggable min/max handles.
+    """Histogram with draggable min/max handles, bar heights always
+    log-compressed (`np.log1p`) so a tall peak doesn't flatten rarer bins.
+    `set_log_scale` is a separate, opt-in switch for the bin *axis*
+    (x-values), not this height compression.
 
     Drag a handle to move one bound, or drag between them to slide the
     whole window. When a bound goes past the data, the view widens to keep
@@ -58,6 +87,9 @@ class HistogramCanvas(QWidget):
 
         self._counts: Optional[np.ndarray] = None
         self._color: Optional[QColor] = None
+        self._log_scale = False
+        self._raw_values: Optional[np.ndarray] = None
+        self._bins_arg: Optional[int] = None
         self.data_min, self.data_max = 0.0, 1.0
         # Extent the bars are drawn over -- the data range, or half a unit
         # wider for integer data binned one bin per value.
@@ -71,39 +103,73 @@ class HistogramCanvas(QWidget):
 
     # -- data and range -------------------------------------------------
 
-    def set_data(self, values, bins: int = DEFAULT_BINS) -> None:
+    def set_data(self, values, bins: Optional[int] = None) -> None:
         """Histogram `values` (non-finite entries ignored). An empty or
         all-NaN input draws flat rather than raising.
 
-        Integer-valued data spanning no more than `bins` values gets one
+        `bins` forces a fixed bin count; left as None (the default), the
+        count is Freedman-Diaconis, data-driven rather than a flat guess.
+
+        Integer-valued data spanning no more than the bin budget gets one
         bin per value, centered on it: a track length of 3..15 spread over
         100 bins is a dozen slivers, most of them hidden under the
-        handles."""
-        finite = np.asarray(values, dtype=np.float64).ravel()
-        finite = finite[np.isfinite(finite)]
+        handles. Log mode (`set_log_scale`) has no analog of this -- it
+        always uses the adaptive or forced bin count."""
+        self._raw_values = np.asarray(values, dtype=np.float64).ravel()
+        self._bins_arg = bins
+        self._rebin()
+        self._update_view()
+        self.update()
+
+    def _rebin(self) -> None:
+        raw = self._raw_values if self._raw_values is not None else np.empty(0)
+        finite = raw[np.isfinite(raw)]
+        if self._log_scale:
+            self._rebin_log(finite)
+        else:
+            self._rebin_linear(finite)
+
+    def _rebin_linear(self, finite: np.ndarray) -> None:
         if finite.size == 0:
             self.data_min, self.data_max = 0.0, 1.0
             self._bars_min, self._bars_max = 0.0, 1.0
-            self._counts = np.zeros(bins)
+            self._counts = np.zeros(self._bins_arg or MIN_BINS)
+            return
+        self.data_min, self.data_max = float(finite.min()), float(finite.max())
+        span = self.data_max - self.data_min
+        budget = self._bins_arg if self._bins_arg is not None else INTEGER_BIN_BUDGET
+        if span <= budget and np.all(finite == np.round(finite)):
+            n = int(span) + 1
+            self._bars_min, self._bars_max = self.data_min - 0.5, self.data_max + 0.5
+            counts, _ = np.histogram(finite, bins=n, range=(self._bars_min, self._bars_max))
+            if span == 0:
+                self.data_max = self.data_min + 1e-9
         else:
-            self.data_min, self.data_max = float(finite.min()), float(finite.max())
-            span = self.data_max - self.data_min
-            if span <= bins and np.all(finite == np.round(finite)):
-                n = int(span) + 1
-                self._bars_min, self._bars_max = self.data_min - 0.5, self.data_max + 0.5
-                counts, _ = np.histogram(finite, bins=n, range=(self._bars_min, self._bars_max))
-                if span == 0:
-                    self.data_max = self.data_min + 1e-9
-            else:
-                # A near-constant column would make non-increasing bin edges.
-                min_span = max(abs(self.data_min), abs(self.data_max), 1.0) * 1e-9
-                if span < min_span:
-                    self.data_max = self.data_min + min_span
-                self._bars_min, self._bars_max = self.data_min, self.data_max
-                counts, _ = np.histogram(finite, bins=bins, range=(self.data_min, self.data_max))
-            self._counts = np.log1p(counts)
-        self._update_view()
-        self.update()
+            # A near-constant column would make non-increasing bin edges.
+            min_span = max(abs(self.data_min), abs(self.data_max), 1.0) * 1e-9
+            if span < min_span:
+                self.data_max = self.data_min + min_span
+            n_bins = self._bins_arg if self._bins_arg is not None else _fd_bin_count(finite)
+            self._bars_min, self._bars_max = self.data_min, self.data_max
+            counts, _ = np.histogram(finite, bins=n_bins, range=(self.data_min, self.data_max))
+        self._counts = np.log1p(counts)
+
+    def _rebin_log(self, finite: np.ndarray) -> None:
+        """Bin the positive subset of `finite` (values <= 0 have no place
+        on a log axis, so they're dropped like NaN/Inf already are)."""
+        pos = finite[finite > 0]
+        if pos.size == 0:
+            self.data_min, self.data_max = LOG_FALLBACK_MIN, LOG_FALLBACK_MAX
+            self._bars_min, self._bars_max = self.data_min, self.data_max
+            self._counts = np.zeros(self._bins_arg or MIN_BINS)
+            return
+        self.data_min, self.data_max = float(pos.min()), float(pos.max())
+        hi = self.data_max if self.data_max > self.data_min else self.data_min * (1 + 1e-9)
+        n_bins = self._bins_arg if self._bins_arg is not None else _fd_bin_count(np.log10(pos))
+        edges = np.logspace(np.log10(self.data_min), np.log10(hi), n_bins + 1)
+        counts, _ = np.histogram(pos, bins=edges)
+        self._bars_min, self._bars_max = self.data_min, hi
+        self._counts = np.log1p(counts)
 
     def set_color(self, color: QColor | str | None) -> None:
         """Tint for the bars -- a channel's color, say. None follows the
@@ -127,21 +193,78 @@ class HistogramCanvas(QWidget):
         or None. Lets a listener tell which bound the user moved."""
         return self._dragging
 
+    def set_log_scale(self, enabled: bool) -> None:
+        """Switch bin spacing between linear and log10, re-binning the
+        last data given to `set_data` (no need to call it again). Values
+        <= 0 are excluded from log-mode binning, same as NaN/Inf always
+        are. A drag in progress is cancelled, not committed, since
+        nothing was finished when the mode changed under it."""
+        if enabled == self._log_scale:
+            return
+        if self._dragging is not None:
+            self._dragging = None
+            self._moved = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self._log_scale = enabled
+        self._rebin()
+        self._clamp_range_to_mode()
+        self._update_view()
+        self.update()
+
+    def log_scale(self) -> bool:
+        return self._log_scale
+
+    def _clamp_range_to_mode(self) -> None:
+        """After switching to log mode, pull lo/hi off of <= 0 (e.g. a
+        linear-mode range that reached down to 0) so nothing downstream
+        ever takes log10 of a non-positive number."""
+        if not self._log_scale:
+            return
+        floor = self.data_min if self.data_min > 0 else 1e-12
+        if self.lo <= 0:
+            self.lo = floor
+        if self.hi <= 0:
+            self.hi = floor
+        if self.hi <= self.lo:
+            self.hi = self.lo * 10
+
     # -- geometry -------------------------------------------------------
 
     def _update_view(self) -> None:
-        margin = (self.data_max - self.data_min) * 0.05 or 1.0
-        self._view_min = min(self._bars_min, self.lo - margin if self.lo < self.data_min else self.data_min)
-        self._view_max = max(self._bars_max, self.hi + margin if self.hi > self.data_max else self.data_max)
+        if self._log_scale:
+            log_span = math.log10(self._bars_max) - math.log10(self._bars_min)
+            margin = log_span * 0.05 or 0.5
+            lo = math.log10(self.lo) if self.lo > 0 else math.log10(self.data_min)
+            hi = math.log10(self.hi) if self.hi > 0 else math.log10(self.data_max)
+            vmin = min(
+                math.log10(self._bars_min), lo - margin if self.lo < self.data_min else math.log10(self.data_min)
+            )
+            vmax = max(
+                math.log10(self._bars_max), hi + margin if self.hi > self.data_max else math.log10(self.data_max)
+            )
+            self._view_min, self._view_max = 10**vmin, 10**vmax
+        else:
+            margin = (self.data_max - self.data_min) * 0.05 or 1.0
+            self._view_min = min(self._bars_min, self.lo - margin if self.lo < self.data_min else self.data_min)
+            self._view_max = max(self._bars_max, self.hi + margin if self.hi > self.data_max else self.data_max)
 
     def _val_to_x(self, value: float) -> float:
-        span = self._view_max - self._view_min
+        if self._log_scale:
+            value = max(value, self._view_min)
+            v, lo, hi = math.log10(value), math.log10(self._view_min), math.log10(self._view_max)
+        else:
+            v, lo, hi = value, self._view_min, self._view_max
+        span = hi - lo
         if span <= 0:
             return 0.0
-        x = (value - self._view_min) / span * self.width()
+        x = (v - lo) / span * self.width()
         return max(-1e9, min(x, 1e9))
 
     def _x_to_val(self, x: float) -> float:
+        if self._log_scale:
+            lo, hi = math.log10(self._view_min), math.log10(self._view_max)
+            value = 10 ** (lo + x / max(self.width(), 1) * (hi - lo))
+            return max(self._view_min, min(value, self._view_max))
         span = self._view_max - self._view_min
         value = self._view_min + x / max(self.width(), 1) * span
         return max(self._view_min, min(value, self._view_max))
@@ -187,8 +310,15 @@ class HistogramCanvas(QWidget):
 
     def _draw_labels(self, painter: QPainter, x_lo: float, x_hi: float, h: int) -> None:
         metrics = painter.fontMetrics()
-        lo_text = format_adaptive(self.lo, self.data_min, self.data_max)
-        hi_text = format_adaptive(self.hi, self.data_min, self.data_max)
+        if self._log_scale:
+            # A log-mode span (e.g. 1e-3..1e6) would round a small value's
+            # decimals to 0 against the shared span -- size each label to
+            # its own magnitude instead.
+            lo_text = format_adaptive(self.lo, self.lo * 0.1, self.lo * 10)
+            hi_text = format_adaptive(self.hi, self.hi * 0.1, self.hi * 10)
+        else:
+            lo_text = format_adaptive(self.lo, self.data_min, self.data_max)
+            hi_text = format_adaptive(self.hi, self.data_min, self.data_max)
         lo_w = metrics.horizontalAdvance(lo_text)
         hi_w = metrics.horizontalAdvance(hi_text)
         w = self.width()
@@ -234,7 +364,7 @@ class HistogramCanvas(QWidget):
             )
             return
 
-        eps = (self.data_max - self.data_min) * 1e-9 or 1e-12
+        eps = (self.hi * 1e-6 or 1e-12) if self._log_scale else ((self.data_max - self.data_min) * 1e-9 or 1e-12)
         if self._dragging == "center":
             delta = (x - self._last_x) / max(self.width(), 1) * (self._view_max - self._view_min)
             # Don't slide the window off the view: clamp the delta.
@@ -299,11 +429,21 @@ class HistogramRangeWidget(QWidget):
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self._max_spin)
 
-    def set_data(self, values, bins: int = DEFAULT_BINS) -> None:
+    def set_data(self, values, bins: Optional[int] = None) -> None:
         self.canvas.set_data(values, bins)
         for spin in (self._min_spin, self._max_spin):
             configure_spinbox_for_range(spin, *self.canvas.data_range())
         self._fit_spin_width()
+
+    def set_log_scale(self, enabled: bool) -> None:
+        self.canvas.set_log_scale(enabled)
+        for spin in (self._min_spin, self._max_spin):
+            configure_spinbox_for_range(spin, *self.canvas.data_range())
+        self._fit_spin_width()
+        self._set_spins(*self.canvas.range())
+
+    def log_scale(self) -> bool:
+        return self.canvas.log_scale()
 
     def _fit_spin_width(self) -> None:
         """Size both spinboxes to the longest value they can show."""

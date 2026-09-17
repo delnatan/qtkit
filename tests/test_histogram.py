@@ -1,7 +1,7 @@
 import numpy as np
 from qtpy.QtCore import QPoint, Qt
 
-from qtkit.histogram import HistogramCanvas, HistogramRangeWidget
+from qtkit.histogram import MAX_BINS, MIN_BINS, HistogramCanvas, HistogramRangeWidget
 
 
 def make_canvas(qtbot, **kwargs):
@@ -93,3 +93,90 @@ def test_spinboxes_fit_their_values(qtbot):
     spin = widget._min_spin
     needed = spin.fontMetrics().horizontalAdvance(spin.textFromValue(spin.maximum()))
     assert spin.width() >= needed
+
+
+def test_log_scale_bins_are_log_spaced(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    canvas.set_data(np.logspace(0, 4, 2000), bins=20)
+    canvas.set_log_scale(True)
+    lo, hi = canvas.data_range()
+    edges = np.logspace(np.log10(lo), np.log10(hi), 21)
+    ratios = edges[1:] / edges[:-1]
+    assert np.allclose(ratios, ratios[0], rtol=1e-6)
+
+
+def test_log_scale_excludes_non_positive(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    values = np.concatenate([[-5.0, 0.0], np.linspace(1.0, 100.0, 200)])
+    canvas.set_data(values)
+    assert canvas.data_range()[0] <= 0
+    canvas.set_log_scale(True)
+    lo, hi = canvas.data_range()
+    assert lo == 1.0 and hi == 100.0
+
+
+def test_log_scale_all_non_positive_falls_back(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    canvas.set_data([-3.0, -2.0, 0.0])
+    canvas.set_log_scale(True)
+    assert canvas.data_range() == (1.0, 10.0)
+
+
+def test_adaptive_bin_count_replaces_fixed_default(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    rng = np.random.default_rng(0)
+    canvas.set_data(rng.normal(0, 1, 5000))
+    assert MIN_BINS <= len(canvas._counts) <= MAX_BINS
+
+
+def test_explicit_bins_still_forced(qtbot):
+    rng = np.random.default_rng(0)
+    values = rng.normal(10, 2, 500)
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    canvas.set_data(values, bins=17)
+    assert len(canvas._counts) == 17
+    canvas.set_log_scale(True)
+    assert len(canvas._counts) == 17
+
+
+def test_toggle_log_scale_rebins_without_new_data(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    canvas.set_data(np.logspace(0, 3, 500))
+    linear_range = canvas.data_range()
+    canvas.set_log_scale(True)
+    assert canvas.data_range() != linear_range or canvas.log_scale()
+
+
+def test_toggle_log_scale_clamps_zero_lo(qtbot):
+    canvas = make_canvas(qtbot)
+    canvas.set_range(0, 80)
+    canvas.set_log_scale(True)
+    lo, hi = canvas.range()
+    assert lo > 0 and hi > lo
+
+
+def test_toggle_log_scale_cancels_active_drag(qtbot):
+    canvas = make_canvas(qtbot)
+    y = 30
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=QPoint(x_of(canvas, 20), y))
+    qtbot.mouseMove(canvas, QPoint(x_of(canvas, 25), y))
+    committed = []
+    canvas.rangeCommitted.connect(lambda lo, hi: committed.append((lo, hi)))
+    canvas.set_log_scale(True)
+    assert canvas.dragging() is None
+    assert committed == []
+
+
+def test_range_widget_log_scale_reconfigures_spinboxes(qtbot):
+    widget = HistogramRangeWidget()
+    qtbot.addWidget(widget)
+    widget.set_data(np.concatenate([[-1.0], np.linspace(1.0, 1000.0, 200)]))
+    widget.set_log_scale(True)
+    assert widget._min_spin.minimum() <= widget.data_range()[0]
+    assert widget.range()[0] > 0

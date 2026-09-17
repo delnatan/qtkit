@@ -37,7 +37,7 @@ matplotlib at module level.
 | `layouts` | `scrolled`, `wrapping_label`, `FlowLayout` / `flow_row`, `hline` |
 | `sections` | `CollapsibleSection`, `StepPager` (one step of a flow at a time) |
 | `spinbox` | adaptive decimals/step for a data range, `OptionalSpinBox` (value or "auto") |
-| `histogram` | `HistogramCanvas` (drag handles or the window between them), `HistogramRangeWidget` (with spinboxes) |
+| `histogram` | `HistogramCanvas` (drag handles or the window between them), `HistogramRangeWidget` (with spinboxes); `set_log_scale(bool)` for log-spaced bins, adaptive (Freedman-Diaconis) bin count by default |
 | `filters` | `FilterSpec`, `filter_mask`, `FilterPanel` (stacked histogram range filters, "N of M pass") |
 | `table` | `ColumnTableModel`: sortable read-only table over numpy columns (missing values last) |
 | `plot` | `PlotWindow` for matplotlib figures, `AxisPicker` (x/y column + log toggles) — needs `qtkit[plot]` |

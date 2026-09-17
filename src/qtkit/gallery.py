@@ -18,6 +18,7 @@ from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -99,6 +100,11 @@ def build() -> QWidget:
     tinted.set_color("#e0a030")
     tinted.set_range(0.5, 1.2)
 
+    log_histogram = HistogramRangeWidget(show_labels=True)
+    log_histogram.set_data(table["D_um2_s"])
+    log_scale_check = QCheckBox("log scale")
+    log_scale_check.toggled.connect(log_histogram.set_log_scale)
+
     gain = OptionalSpinBox(double_spinbox(2.0, 1e-3, 1e3, 0.1, 3), auto_text="estimate per frame")
     chips = []
     for level in Status:
@@ -128,6 +134,9 @@ def build() -> QWidget:
     left_layout.addWidget(readout)
     left_layout.addWidget(QLabel("<b>tinted, no spinboxes</b>"))
     left_layout.addWidget(tinted)
+    left_layout.addWidget(QLabel("<b>D_um2_s, log-scale toggle</b>"))
+    left_layout.addWidget(log_histogram)
+    left_layout.addWidget(log_scale_check)
     left_layout.addWidget(QLabel("<b>Status levels</b>"))
     left_layout.addWidget(status_row)
     left_layout.addWidget(CollapsibleSection("Expert settings (OptionalSpinBox)", expert))
