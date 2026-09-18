@@ -42,12 +42,24 @@ def format_adaptive(value: float, data_min: float, data_max: float) -> str:
 
 
 def configure_spinbox_for_range(
-    spinbox: QDoubleSpinBox, data_min: float, data_max: float, margin: float = 0.1
+    spinbox: QDoubleSpinBox,
+    data_min: float,
+    data_max: float,
+    margin: float = 0.1,
+    precision_range: Optional[tuple[float, float]] = None,
 ) -> None:
     """Set `spinbox`'s decimals, step and range for data spanning
     `data_min..data_max`, with `margin` (a fraction of the span) of room
-    either side. Silent: no `valueChanged` while reconfiguring."""
-    decimals, step = adaptive_decimals_step(data_min, data_max)
+    either side. Silent: no `valueChanged` while reconfiguring.
+
+    `precision_range`, given, sizes decimals/step instead of
+    `data_min..data_max` -- pass a percentile-trimmed range when the full
+    span is dominated by a few outliers, so they don't zero out the
+    decimals needed to work the bulk of the distribution (a handful of
+    failed fits blowing a localization-precision column out to 1e5
+    shouldn't turn its spinbox into an integer field at 0.01)."""
+    precision_min, precision_max = precision_range if precision_range is not None else (data_min, data_max)
+    decimals, step = adaptive_decimals_step(precision_min, precision_max)
     span = data_max - data_min
     pad = span * margin if span > 0 else 1.0
     blocked = spinbox.blockSignals(True)

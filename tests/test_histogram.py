@@ -180,3 +180,37 @@ def test_range_widget_log_scale_reconfigures_spinboxes(qtbot):
     widget.set_log_scale(True)
     assert widget._min_spin.minimum() <= widget.data_range()[0]
     assert widget.range()[0] > 0
+
+
+def test_robust_range_trims_outliers(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    rng = np.random.default_rng(0)
+    bulk = rng.uniform(0.001, 0.05, 995)
+    outliers = np.array([50.0, 120.0, 3000.0, 1e5])
+    canvas.set_data(np.concatenate([bulk, outliers]))
+    assert canvas.data_range()[1] == 1e5
+    lo, hi = canvas.robust_range()
+    assert 0.0 <= lo < hi < 1.0
+
+
+def test_robust_range_falls_back_with_too_few_points(qtbot):
+    canvas = HistogramCanvas()
+    qtbot.addWidget(canvas)
+    canvas.set_data([1.0])
+    assert canvas.robust_range() == canvas.data_range()
+
+
+def test_spinbox_decimals_survive_outliers(qtbot):
+    """A handful of failed-fit outliers (a localization-precision column
+    like `se_pos` blown out to 1e5 by a few bad points) must not zero out
+    the decimals needed to filter the bulk of the distribution."""
+    widget = HistogramRangeWidget()
+    qtbot.addWidget(widget)
+    rng = np.random.default_rng(0)
+    bulk = rng.uniform(0.001, 0.05, 995)
+    outliers = np.array([50.0, 120.0, 3000.0, 1e5])
+    widget.set_data(np.concatenate([bulk, outliers]))
+    assert widget._min_spin.decimals() >= 3
+    # The full outlier range must still be reachable.
+    assert widget._min_spin.maximum() >= 1e5

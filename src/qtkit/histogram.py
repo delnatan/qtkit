@@ -188,6 +188,20 @@ class HistogramCanvas(QWidget):
     def data_range(self) -> tuple[float, float]:
         return self.data_min, self.data_max
 
+    def robust_range(self, low: float = 1.0, high: float = 99.0) -> tuple[float, float]:
+        """`(lo, hi)` percentiles of the current data -- `data_range` with
+        the long tail of outliers trimmed off, for sizing spinbox
+        precision rather than drawing bars or setting bounds. A handful of
+        failed fits blowing a localization-precision column out to 1e5
+        shouldn't zero out the decimals needed near the bulk of the
+        distribution at 0.01."""
+        raw = self._raw_values if self._raw_values is not None else np.empty(0)
+        finite = raw[np.isfinite(raw)]
+        if finite.size < 2:
+            return self.data_range()
+        lo, hi = np.percentile(finite, [low, high])
+        return (float(lo), float(hi)) if hi > lo else self.data_range()
+
     def dragging(self) -> Optional[str]:
         """Which part is being dragged right now: "min", "max", "center"
         or None. Lets a listener tell which bound the user moved."""
@@ -317,8 +331,9 @@ class HistogramCanvas(QWidget):
             lo_text = format_adaptive(self.lo, self.lo * 0.1, self.lo * 10)
             hi_text = format_adaptive(self.hi, self.hi * 0.1, self.hi * 10)
         else:
-            lo_text = format_adaptive(self.lo, self.data_min, self.data_max)
-            hi_text = format_adaptive(self.hi, self.data_min, self.data_max)
+            precision_min, precision_max = self.robust_range()
+            lo_text = format_adaptive(self.lo, precision_min, precision_max)
+            hi_text = format_adaptive(self.hi, precision_min, precision_max)
         lo_w = metrics.horizontalAdvance(lo_text)
         hi_w = metrics.horizontalAdvance(hi_text)
         w = self.width()
@@ -432,13 +447,13 @@ class HistogramRangeWidget(QWidget):
     def set_data(self, values, bins: Optional[int] = None) -> None:
         self.canvas.set_data(values, bins)
         for spin in (self._min_spin, self._max_spin):
-            configure_spinbox_for_range(spin, *self.canvas.data_range())
+            configure_spinbox_for_range(spin, *self.canvas.data_range(), precision_range=self.canvas.robust_range())
         self._fit_spin_width()
 
     def set_log_scale(self, enabled: bool) -> None:
         self.canvas.set_log_scale(enabled)
         for spin in (self._min_spin, self._max_spin):
-            configure_spinbox_for_range(spin, *self.canvas.data_range())
+            configure_spinbox_for_range(spin, *self.canvas.data_range(), precision_range=self.canvas.robust_range())
         self._fit_spin_width()
         self._set_spins(*self.canvas.range())
 
