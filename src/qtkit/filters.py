@@ -99,11 +99,25 @@ def intersect(a: tuple[Bound, Bound], b: tuple[Bound, Bound]) -> tuple[Bound, Bo
 class FilterRow(QWidget):
     """One column's histogram and handles, with the column re-pickable in
     place -- a row looking at the wrong feature is re-pointed rather than
-    removed and re-added."""
+    removed and re-added.
+
+    The "log" button in the header switches this row's histogram to
+    log-spaced bins -- for a column spanning orders of magnitude, where
+    linear bins are one spike at the low end. It is a view of the data,
+    not part of the cut: a bounded side keeps its value, an unbounded side
+    stays unbounded. It is offered per row because whether log helps is a
+    property of the column; a tight distribution reads better linear."""
 
     changed = Signal()
     committed = Signal()
     removeRequested = Signal(object)
+    # (column, enabled) when the user toggles "log" -- not from
+    # `set_log_scale`.
+    logScaleToggled = Signal(str, bool)
+    # The user picked another column (after the row re-pointed itself,
+    # before `changed`/`committed`), so the owner can restore that
+    # column's view settings first.
+    columnChanged = Signal(str)
 
     def __init__(self, columns: Sequence[str], column: Optional[str] = None) -> None:
         super().__init__()
@@ -129,6 +143,18 @@ class FilterRow(QWidget):
         self._remove_button.setToolTip("Remove this filter")
         self._remove_button.clicked.connect(lambda: self.removeRequested.emit(self))
 
+        # A checkable button rather than a checkbox: it sits with the
+        # row's other small header buttons and costs no extra line.
+        self._log_button = QPushButton("log")
+        self._log_button.setCheckable(True)
+        self._log_button.setFixedWidth(32)
+        self._log_button.setToolTip(
+            "Log-spaced bins, for a column spanning orders of magnitude.\n"
+            "Changes the view only; values <= 0 aren't drawn but still pass\n"
+            "an unbounded lower side."
+        )
+        self._log_button.toggled.connect(self._on_log_toggled)
+
         self.histogram = HistogramRangeWidget()
         self.histogram.rangeChanged.connect(self._on_range_changed)
         self.histogram.rangeCommitted.connect(self._on_range_committed)
@@ -137,6 +163,7 @@ class FilterRow(QWidget):
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(2)
         head.addWidget(self._column_picker, 1)
+        head.addWidget(self._log_button)
         head.addWidget(self._reset_button)
         head.addWidget(self._remove_button)
 
@@ -174,6 +201,53 @@ class FilterRow(QWidget):
         self.histogram.set_data(columns[column])
         self._loading = False
         self.set_bounds(*previous)
+        self._update_log_button()
+
+    def log_scale(self) -> bool:
+        return self.histogram.log_scale()
+
+    def set_log_scale(self, enabled: bool) -> None:
+        """Switch the histogram's bins between linear and log10, keeping
+        the cut (see the class docstring). Silent. Ignored (stays
+        linear) for a column with no positive values."""
+        enabled = enabled and self._log_button.isEnabled()
+        self._apply_log_scale(enabled)
+        blocked = self._log_button.blockSignals(True)
+        self._log_button.setChecked(enabled)
+        self._log_button.blockSignals(blocked)
+
+    def _apply_log_scale(self, enabled: bool) -> bool:
+        """Re-bin, then put the cut back. Returns whether the cut moved:
+        a side bounded at <= 0 has nowhere to sit on a log axis, so it
+        comes back unbounded."""
+        if enabled == self.histogram.log_scale():
+            return False
+        previous = self.bounds()
+        self._loading = True
+        self.histogram.set_log_scale(enabled)
+        self._loading = False
+        lo, hi = previous
+        if enabled:
+            lo = None if lo is not None and lo <= 0 else lo
+            hi = None if hi is not None and hi <= 0 else hi
+        self.set_bounds(lo, hi)
+        return self.bounds() != previous
+
+    def _update_log_button(self) -> None:
+        """Log bins need positive values; a column with none offers no
+        log view (and drops one it had)."""
+        values = self._source.get(self.column()) if self._source else None
+        has_positive = values is not None and bool(np.any(np.asarray(values, dtype=np.float64) > 0))
+        self._log_button.setEnabled(has_positive)
+        if not has_positive and self.log_scale():
+            self.set_log_scale(False)
+
+    def _on_log_toggled(self, enabled: bool) -> None:
+        moved = self._apply_log_scale(enabled)
+        self.logScaleToggled.emit(self.column(), enabled)
+        if moved:
+            self.changed.emit()
+            self.committed.emit()
 
     def bounds(self) -> tuple[Bound, Bound]:
         """The cut as `(lo, hi)`, a side at or past the data extreme being
@@ -196,8 +270,9 @@ class FilterRow(QWidget):
         self.changed.emit()
         self.committed.emit()
 
-    def _on_column_changed(self, _column: str) -> None:
+    def _on_column_changed(self, column: str) -> None:
         self.set_source(self._source, keep_bounds=False)
+        self.columnChanged.emit(column)
         self.changed.emit()
         self.committed.emit()
 
@@ -226,6 +301,11 @@ class FilterPanel(QWidget):
 
     `noun` names what one row of the source is ("points", "tracks"), for
     the readout and tooltips.
+
+    Which columns are viewed on log bins is remembered per column, not
+    per row: a row re-pointed to a column, or rebuilt by `set_filters`,
+    comes back in that column's last view. `log_columns` /
+    `set_log_columns` read and seed it (defaults, or a saved session).
     """
 
     filtersChanged = Signal()
@@ -239,6 +319,7 @@ class FilterPanel(QWidget):
         self._length = 0
         self._columns: list[str] = []
         self._rows: list[FilterRow] = []
+        self._log_columns: set[str] = set()
 
         self._rows_layout = QVBoxLayout()
         self._rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -289,10 +370,38 @@ class FilterPanel(QWidget):
         for row in self._rows:
             row.set_columns(self._columns)
             row.set_source(self._source or {}, keep_bounds=True)
+            row.set_log_scale(row.column() in self._log_columns)
         self._update_state()
 
     def columns(self) -> list[str]:
         return list(self._columns)
+
+    # -- log view -------------------------------------------------------
+
+    def log_columns(self) -> set[str]:
+        return set(self._log_columns)
+
+    def set_log_columns(self, columns: Iterable[str]) -> None:
+        """Which columns' histograms use log bins, here and in rows added
+        later. Silent."""
+        self._log_columns = set(columns)
+        for row in self._rows:
+            row.set_log_scale(row.column() in self._log_columns)
+
+    def _on_log_scale_toggled(self, column: str, enabled: bool) -> None:
+        if enabled:
+            self._log_columns.add(column)
+        else:
+            self._log_columns.discard(column)
+        # Every row on that column follows: two rows on one feature in two
+        # different views would be two different-looking histograms of the
+        # same data.
+        for row in self._rows:
+            if row.column() == column:
+                row.set_log_scale(enabled)
+
+    def _on_row_column_changed(self, row: "FilterRow", column: str) -> None:
+        row.set_log_scale(column in self._log_columns)
 
     # -- the spec -------------------------------------------------------
 
@@ -364,7 +473,10 @@ class FilterPanel(QWidget):
         row.changed.connect(lambda: self._notify(commit=False))
         row.committed.connect(lambda: self._notify(commit=True))
         row.removeRequested.connect(self._remove_row)
+        row.logScaleToggled.connect(self._on_log_scale_toggled)
+        row.columnChanged.connect(lambda c, row=row: self._on_row_column_changed(row, c))
         row.set_source(self._source or {}, keep_bounds=False)
+        row.set_log_scale(column in self._log_columns)
         self._rows.append(row)
         self._rows_layout.addWidget(row)
         if notify:
