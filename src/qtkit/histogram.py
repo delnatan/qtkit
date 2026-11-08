@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 from qtpy.QtCore import QRectF, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QPainter, QPalette, QPen
-from qtpy.QtWidgets import QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout, QWidget
+from qtpy.QtWidgets import QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout, QSizePolicy, QWidget
 
 from qtkit.colors import dim_color
 from qtkit.spinbox import configure_spinbox_for_range, format_adaptive
@@ -430,6 +430,8 @@ class HistogramRangeWidget(QWidget):
             # which is a third of a dock.
             spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             spin.setAlignment(Qt.AlignmentFlag.AlignRight)
+            # Exactly as wide as `sizeHint()` -- see `_fit_spin_width`.
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             spin.setVisible(show_spinboxes)
         self._fit_spin_width()
 
@@ -461,13 +463,20 @@ class HistogramRangeWidget(QWidget):
         return self.canvas.log_scale()
 
     def _fit_spin_width(self) -> None:
-        """Size both spinboxes to the longest value they can show."""
-        spin = self._min_spin
-        texts = [spin.textFromValue(v) for v in (spin.minimum(), spin.maximum())]
-        text_width = max(spin.fontMetrics().horizontalAdvance(t) for t in texts)
-        width = text_width + 2 * spin.fontMetrics().averageCharWidth() + 8
+        """Re-size both spinboxes to the longest value they can show.
+
+        The width is the spinbox's own `sizeHint()`, which measures the
+        texts of its minimum and maximum and adds whatever the style puts
+        around them. A width computed here from font metrics can't know
+        that: napari's stylesheet alone pads a spinbox by 20px, and with
+        Linux fonts that left no room for the text, which then scrolled
+        partly or wholly out of view. The hint is also only read when the
+        layout asks for it, so a stylesheet applied after `set_data` (the
+        widget built, fed, then docked into napari) is still counted.
+        Both boxes share one range (`configure_spinbox_for_range`), so
+        their hints, and widths, agree."""
         for box in (self._min_spin, self._max_spin):
-            box.setFixedWidth(max(width, 48))
+            box.updateGeometry()
 
     def set_color(self, color: QColor | str | None) -> None:
         self.canvas.set_color(color)
