@@ -82,3 +82,55 @@ def test_refresh_keeps_bounded_sides_and_unbounded_stays_unbounded(qtbot, table)
     with qtbot.assertNotEmitted(panel.filtersChanged):
         panel.set_source(wider)
     assert panel.filters() == {"flux": (2.0, None)}
+
+
+def test_log_scale_is_per_row_and_keeps_the_cut(qtbot):
+    wide = {"flux": np.logspace(0, 4, 50), "sigma": np.linspace(1.0, 1.5, 50)}
+    panel = FilterPanel()
+    qtbot.addWidget(panel)
+    panel.set_source(wide)
+    flux, sigma = panel.add_filter("flux"), panel.add_filter("sigma")
+    flux.set_bounds(10.0, None)
+    with qtbot.assertNotEmitted(panel.filtersChanged):
+        flux._log_button.click()
+    assert flux.log_scale() and not sigma.log_scale()
+    assert panel.filters() == {"flux": (10.0, None)}
+    assert panel.log_columns() == {"flux"}
+
+
+def test_log_scale_is_remembered_per_column(qtbot):
+    wide = {"flux": np.logspace(0, 4, 50), "sigma": np.linspace(1.0, 1.5, 50)}
+    panel = FilterPanel()
+    qtbot.addWidget(panel)
+    panel.set_source(wide)
+    row = panel.add_filter("flux")
+    row._log_button.click()
+    row._column_picker.setCurrentText("sigma")
+    assert not row.log_scale()
+    row._column_picker.setCurrentText("flux")
+    assert row.log_scale()
+    # Rebuilt rows and later rows come back in their column's view.
+    panel.set_filters({"flux": (5.0, None)})
+    assert panel.rows()[0].log_scale()
+    assert panel.add_filter("flux").log_scale()
+
+
+def test_log_scale_unavailable_without_positive_values(qtbot):
+    panel = FilterPanel()
+    qtbot.addWidget(panel)
+    panel.set_source({"shift": np.linspace(-3.0, -1.0, 20), "flux": np.logspace(0, 3, 20)})
+    panel.set_log_columns({"shift", "flux"})
+    row = panel.add_filter("shift")
+    assert not row._log_button.isEnabled() and not row.log_scale()
+    assert panel.add_filter("flux").log_scale()
+
+
+def test_log_scale_drops_a_nonpositive_bound(qtbot):
+    panel = FilterPanel()
+    qtbot.addWidget(panel)
+    panel.set_source({"x": np.linspace(-1.0, 100.0, 50)})
+    row = panel.add_filter("x")
+    row.set_bounds(-0.5, 50.0)
+    with qtbot.waitSignal(panel.filtersCommitted):
+        row._log_button.click()
+    assert panel.filters() == {"x": (None, 50.0)}
