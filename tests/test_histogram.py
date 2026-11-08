@@ -1,3 +1,4 @@
+import pytest
 import numpy as np
 from qtpy.QtCore import QPoint, Qt
 
@@ -86,13 +87,34 @@ def test_integer_data_gets_one_bin_per_value(qtbot):
     assert canvas._view_min <= 2.5 and canvas._view_max >= 15.5
 
 
-def test_spinboxes_fit_their_values(qtbot):
+def _text_area_fits(spin):
+    """The spinbox's text area -- not its outer box, which also holds the
+    style's padding and frame -- is wide enough for its longest value."""
+    needed = max(spin.fontMetrics().horizontalAdvance(spin.textFromValue(v)) for v in (spin.minimum(), spin.maximum()))
+    return spin.lineEdit().width() >= needed
+
+
+@pytest.mark.parametrize(
+    "stylesheet",
+    [
+        "",
+        # napari's base rule for every spinbox (00_base.qss).
+        "QAbstractSpinBox { padding: 1px 10px; min-width: 70px; }",
+        # Padding that leaves the 70px floor too narrow for the value.
+        "QAbstractSpinBox { padding: 1px 30px; min-width: 10px; }",
+    ],
+)
+def test_spinboxes_fit_their_values(qtbot, stylesheet):
     widget = HistogramRangeWidget()
     qtbot.addWidget(widget)
-    widget.set_data(np.array([0.0, 123456.0]))
-    spin = widget._min_spin
-    needed = spin.fontMetrics().horizontalAdvance(spin.textFromValue(spin.maximum()))
-    assert spin.width() >= needed
+    widget.set_data(np.array([0.0, 123456.789, 0.5]))
+    # Styled after the data, as when a fed panel is docked into napari.
+    widget.setStyleSheet(stylesheet)
+    widget.resize(400, 40)
+    widget.show()
+    qtbot.waitExposed(widget)
+    assert _text_area_fits(widget._min_spin)
+    assert _text_area_fits(widget._max_spin)
 
 
 def test_log_scale_bins_are_log_spaced(qtbot):
