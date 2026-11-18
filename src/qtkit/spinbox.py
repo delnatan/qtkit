@@ -9,14 +9,27 @@ from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QCheckBox, QDoubleSpinBox, QHBoxLayout, QWidget
 
 
+def _precision_span(data_min: float, data_max: float) -> float:
+    """The span precision is sized to. A span that is no span at all --
+    zero, or the hair a histogram widens a single repeated value by so it
+    can draw it -- would ask for 10 decimals of nothing (a one-class column
+    showed "1.0000000010"), so below 1e-6 of the values' own magnitude the
+    magnitude is used instead."""
+    span = data_max - data_min
+    if not math.isfinite(span):
+        return 1.0
+    magnitude = max(abs(data_min), abs(data_max)) if math.isfinite(data_min + data_max) else 0.0
+    if span <= 1e-6 * magnitude or span <= 0:
+        return magnitude if magnitude > 0 else 1.0
+    return span
+
+
 def adaptive_decimals_step(data_min: float, data_max: float) -> tuple[int, float]:
     """`(decimals, step)` giving ~3-4 significant figures across the span
     `data_min..data_max`. A fixed two-decimal spinbox is useless on a
     diffusion coefficient (~1e-2) and needlessly fussy on a 16-bit
     intensity (~1e4); this sizes both to the span instead."""
-    span = data_max - data_min
-    if not math.isfinite(span) or span <= 0:
-        span = 1.0
+    span = _precision_span(data_min, data_max)
     order = math.floor(math.log10(span))
     decimals = max(0, min(4 - order, 10))
     step = span * 0.01
@@ -29,9 +42,7 @@ def format_adaptive(value: float, data_min: float, data_max: float) -> str:
     """`value` printed at the precision `adaptive_decimals_step` would edit
     it at, switching to scientific notation for very small or very large
     magnitudes."""
-    span = data_max - data_min
-    if not math.isfinite(span) or span <= 0:
-        span = 1.0
+    span = _precision_span(data_min, data_max)
     decimals = max(0, min(4 - math.floor(math.log10(span)), 8))
     magnitude = abs(value) if value != 0 else span
     if math.isfinite(magnitude) and magnitude > 0:

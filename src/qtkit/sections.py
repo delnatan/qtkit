@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
+from qtpy.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPalette, QPen
 from qtpy.QtWidgets import (
     QHBoxLayout,
     QMenu,
@@ -14,6 +15,113 @@ from qtpy.QtWidgets import (
 )
 
 from qtkit.layouts import hline
+
+
+class _DisclosureHeader(QWidget):
+    """A section's header: a chevron and a bold title, toggled by a click
+    or by Space/Enter when focused.
+
+    Painted rather than a `QToolButton`, because a button class is what
+    host stylesheets theme -- pyvistra's paints every button amber with
+    dark text, and a widget-level stylesheet can only override properties,
+    not opt out of them: made transparent, the button kept the dark
+    "text on amber" color, every `palette(...)` role included. A plain
+    `QWidget` takes the host's ordinary text color (`WindowText`) instead,
+    so the header reads like the labels around it under any theme."""
+
+    toggled = Signal(bool)
+
+    _ARROW = 9.0  # the chevron's box, px
+
+    def __init__(self, title: str, expanded: bool) -> None:
+        super().__init__()
+        self._title = title
+        self._expanded = expanded
+        self._hover = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def _font(self) -> QFont:
+        font = QFont(self.font())
+        font.setBold(True)
+        return font
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        metrics = QFontMetrics(self._font())
+        width = int(self._ARROW) + 8 + metrics.horizontalAdvance(self._title) + 6
+        return QSize(width, max(metrics.height(), int(self._ARROW)) + 8)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(int(self._ARROW) + 12, self.sizeHint().height())
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        if expanded == self._expanded:
+            return
+        self._expanded = expanded
+        self.update()
+        self.toggled.emit(expanded)
+
+    def set_title(self, title: str) -> None:
+        self._title = title
+        self.updateGeometry()
+        self.update()
+
+    def title(self) -> str:
+        return self._title
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.set_expanded(not self._expanded)
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.set_expanded(not self._expanded)
+            return
+        super().keyPressEvent(event)
+
+    def event(self, event) -> bool:
+        if event.type() in (QEvent.Type.HoverEnter, QEvent.Type.HoverLeave):
+            self._hover = event.type() == QEvent.Type.HoverEnter
+            self.update()
+        return super().event(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = self.palette().color(QPalette.ColorRole.WindowText)
+        if not self.isEnabled():
+            color = self.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText)
+        if self._hover or self.hasFocus():
+            wash = QPalette(self.palette()).color(QPalette.ColorRole.WindowText)
+            wash.setAlpha(28)  # a faint wash of the text color: themed by the host
+            painter.fillRect(self.rect(), wash)
+        a = self._ARROW
+        cy = self.height() / 2.0
+        box = QRectF(4.0, cy - a / 2.0, a, a)
+        path = QPainterPath()
+        if self._expanded:  # pointing down
+            path.moveTo(QPointF(box.left(), box.top() + a * 0.3))
+            path.lineTo(QPointF(box.center().x(), box.top() + a * 0.75))
+            path.lineTo(QPointF(box.right(), box.top() + a * 0.3))
+        else:  # pointing right
+            path.moveTo(QPointF(box.left() + a * 0.3, box.top()))
+            path.lineTo(QPointF(box.left() + a * 0.75, box.center().y()))
+            path.lineTo(QPointF(box.left() + a * 0.3, box.bottom()))
+        pen = QPen(color, 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.setFont(self._font())
+        text_rect = self.rect().adjusted(int(box.right()) + 6, 0, 0, 0)
+        elided = painter.fontMetrics().elidedText(self._title, Qt.TextElideMode.ElideRight, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, elided)
 
 
 class CollapsibleSection(QWidget):
@@ -29,43 +137,28 @@ class CollapsibleSection(QWidget):
         super().__init__()
         self._content = content
 
-        self._toggle = QToolButton()
-        self._toggle.setText(title)
-        self._toggle.setCheckable(True)
-        self._toggle.setChecked(expanded)
-        self._toggle.setAutoRaise(True)
-        self._toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
-        self._toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._toggle = _DisclosureHeader(title, expanded)
         self._toggle.toggled.connect(self._on_toggled)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(self._toggle)
-        header.addStretch()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        layout.addLayout(header)
+        layout.addWidget(self._toggle)
         layout.addWidget(content)
-        self._apply(expanded)
-
-    def _apply(self, expanded: bool) -> None:
-        self._toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
         self._content.setVisible(expanded)
 
     def _on_toggled(self, checked: bool) -> None:
-        self._apply(checked)
+        self._content.setVisible(checked)
         self.toggled.emit(checked)
 
     def is_expanded(self) -> bool:
-        return self._toggle.isChecked()
+        return self._toggle.is_expanded()
 
     def set_expanded(self, expanded: bool) -> None:
-        self._toggle.setChecked(expanded)
+        self._toggle.set_expanded(expanded)
 
     def set_title(self, title: str) -> None:
-        self._toggle.setText(title)
+        self._toggle.set_title(title)
 
 
 class StepPager(QWidget):
@@ -105,6 +198,10 @@ class StepPager(QWidget):
         self._title.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._title.setToolTip("Jump to a step")
+        # The "▾" is in the title text, not the style's menu indicator: a
+        # host stylesheet's button padding pushes that indicator onto the
+        # text (pyvistra's put it over the step name).
+        self._title.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0px; }")
         self._menu = QMenu(self._title)
         self._title.setMenu(self._menu)
 
@@ -165,7 +262,7 @@ class StepPager(QWidget):
             policy.setVerticalPolicy(shown)
             policy.setHorizontalPolicy(shown)
             page.setSizePolicy(policy)
-        self._title.setText(f"{index + 1} / {total} · {self._titles[index]}")
+        self._title.setText(f"{index + 1} / {total} · {self._titles[index]}  ▾")
         self._prev.setEnabled(index > 0)
         self._next.setEnabled(index < total - 1)
         self._prev.setToolTip(f"Back to {self._titles[index - 1]}" if index > 0 else "")

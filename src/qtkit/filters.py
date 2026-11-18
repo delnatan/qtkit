@@ -159,6 +159,11 @@ class FilterRow(QWidget):
         self.histogram.rangeChanged.connect(self._on_range_changed)
         self.histogram.rangeCommitted.connect(self._on_range_committed)
 
+        # Fixed-width glyph buttons: a host stylesheet's button padding
+        # (pyvistra's is 6px 12px) would leave no room for the glyph.
+        for button in (self._reset_button, self._remove_button, self._log_button):
+            button.setStyleSheet("QPushButton { padding: 0px; }")
+
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(2)
