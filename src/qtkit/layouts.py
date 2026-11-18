@@ -99,39 +99,74 @@ class FlowLayout(QLayout):
         self._do_layout(rect, test_only=False)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return self.minimumSize()
+        # Everything on one line: what the row wants when there is room.
+        # A container that gives a field exactly its size hint (a
+        # `QFormLayout` row, an `AlignLeft` item) would otherwise squeeze
+        # the row to its minimum and wrap it even with width to spare.
+        width = height = 0
+        for i, item in enumerate(self._items):
+            hint = item.sizeHint()
+            width += hint.width() + (self._spacing_x(item) if i else 0)
+            height = max(height, hint.height())
+        return QSize(width, height) + self._margin_size()
 
     def minimumSize(self) -> QSize:  # noqa: N802
-        # The widest single item, not their sum -- the whole point.
+        # The widest single item, not their sum -- the whole point. At its
+        # *size hint*, since that is the size `_do_layout` places it at: a
+        # minimum below it lets the item be clipped.
         size = QSize()
         for item in self._items:
-            size = size.expandedTo(item.minimumSize())
+            size = size.expandedTo(item.sizeHint()).expandedTo(item.minimumSize())
+        return size + self._margin_size()
+
+    def _margin_size(self) -> QSize:
         margins = self.contentsMargins()
-        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def _spacing_x(self, item) -> int:
+        return self._spacing(item, Qt.Orientation.Horizontal)
+
+    def _spacing(self, item, orientation) -> int:
+        space = self.spacing()
+        widget = item.widget()
+        if widget is not None:
+            button = QSizePolicy.ControlType.PushButton
+            space += widget.style().layoutSpacing(button, button, orientation)
+        return space
 
     def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        """Place the items (unless `test_only`) and return the height used.
+        Items on a line are centered on it, so a check box beside a combo
+        box sits level with it rather than at its top."""
         margins = self.contentsMargins()
         effective = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
         x, y, line_height = effective.x(), effective.y(), 0
+        line: list[tuple] = []  # (item, x, hint) on the current line
+
+        def place(line_y: int, height: int) -> None:
+            if test_only:
+                return
+            for item, item_x, hint in line:
+                item.setGeometry(QRect(QPoint(item_x, line_y + (height - hint.height()) // 2), hint))
+
         for item in self._items:
-            space_x = space_y = self.spacing()
-            widget = item.widget()
-            if widget is not None:
-                style = widget.style()
-                button = QSizePolicy.ControlType.PushButton
-                space_x += style.layoutSpacing(button, button, Qt.Orientation.Horizontal)
-                space_y += style.layoutSpacing(button, button, Qt.Orientation.Vertical)
+            space_x = self._spacing(item, Qt.Orientation.Horizontal)
+            space_y = self._spacing(item, Qt.Orientation.Vertical)
             hint = item.sizeHint()
             next_x = x + hint.width() + space_x
-            if next_x - space_x > effective.right() and line_height > 0:
+            # `x + width`, not `QRect.right()` (one less): a row given
+            # exactly its one-line `sizeHint` must not wrap its last item.
+            if next_x - space_x > effective.x() + effective.width() and line_height > 0:
+                place(y, line_height)
+                line = []
                 x = effective.x()
                 y = y + line_height + space_y
                 next_x = x + hint.width() + space_x
                 line_height = 0
-            if not test_only:
-                item.setGeometry(QRect(QPoint(x, y), hint))
+            line.append((item, x, hint))
             x = next_x
             line_height = max(line_height, hint.height())
+        place(y, line_height)
         return y + line_height - rect.y() + margins.bottom()
 
 

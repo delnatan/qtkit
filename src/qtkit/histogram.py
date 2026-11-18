@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 from qtpy.QtCore import QRectF, Qt, Signal
 from qtpy.QtGui import QBrush, QColor, QPainter, QPalette, QPen
-from qtpy.QtWidgets import QAbstractSpinBox, QDoubleSpinBox, QHBoxLayout, QSizePolicy, QWidget
+from qtpy.QtWidgets import QDoubleSpinBox, QHBoxLayout, QSizePolicy, QWidget
 
 from qtkit.colors import dim_color
 from qtkit.spinbox import configure_spinbox_for_range, format_adaptive
@@ -427,8 +427,15 @@ class HistogramRangeWidget(QWidget):
             # No step buttons: dragging is the coarse control and these are
             # for typing an exact value (the wheel still steps). With them,
             # some styles (napari's) need ~110px just to show a number,
-            # which is a third of a dock.
-            spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+            # which is a third of a dock. Collapsed to zero width rather
+            # than `NoButtons`: under any stylesheet, Qt 6.12 lays out a
+            # `NoButtons` spinbox's editor 1px wide, so the box shows blank.
+            spin.setStyleSheet(
+                "QAbstractSpinBox::up-button, QAbstractSpinBox::down-button"
+                " { width: 0px; border: none; }"
+                "QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow"
+                " { image: none; width: 0px; height: 0px; }"
+            )
             spin.setAlignment(Qt.AlignmentFlag.AlignRight)
             # Exactly as wide as `sizeHint()` -- see `_fit_spin_width`.
             spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
